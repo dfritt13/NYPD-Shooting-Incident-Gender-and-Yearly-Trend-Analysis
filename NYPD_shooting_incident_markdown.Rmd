@@ -1,0 +1,267 @@
+---
+title: "NYPD Shooting Occurences Report"
+author: "D. Fritts"
+date: "2025-08-30"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+## Data Load and Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load_libraries, message=FALSE}
+# Loading in necessary libraries
+library(tidyverse)
+```
+
+```{r get_nypd_data, message=FALSE}
+# This imports the nypd shooting incident data
+url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+
+nypd_raw <- read_csv(url)
+
+```
+## Introduction
+This report will analyze the following data:
+
+1. Yearly rates of shooting occurrences in the Boroughs of New York.
+2. The Victim and Perpetrator Gender Dynamics of shooting occurrences in New York.
+
+In the hopes of getting some insight into the following questions:
+
+1. Have shootings in New York been increasing or decreasing?
+2. What do the gender dynamics of shooting occurrences look like?
+
+### Summary of the raw NYPD Shooting Occurrence Data
+
+The following is a summary of the raw NYPD Shooting Occurrence dataset used in this analysis.
+This dataset consists of historical reports of shooting incidents that occured in New York. These include various details about the incident such as when and where it occurred, the race, gender and age group of the perpetrator and victim, wether it was a murder or not, and what police force was responsible for the case. 
+As you can see, most of the data is in character format. We will not be using most of the columns in this analysis. 
+```{r nypd_raw_summary}
+summary(nypd_raw)
+```
+### Initial Data Preparation
+Here we filter out any unused columns, keeping only the following:
+
+1. OCCUR_DATE: What day the shooting occurred on.
+2. BORO: The Borough the shooting occurred in.
+3. PERP_SEX: The shooter's gender.
+4. VIC_SEX: The victim's gender. 
+
+For transformations, OCCUR_DATE's type is changed to the date type and BORO, PERP_SEX and VIC_SEX's types are changed to the factor type.
+```{r nypd_cleanup}
+# Here I have filtered down the data, changed OCCUR_DATE to date type, and the other variables BORO, PERP_SEX and VIC_SEX to factor types
+nypd_filtered <- nypd_raw %>% 
+  select(-c(OCCUR_TIME, INCIDENT_KEY, 
+            LOCATION_DESC, LOC_OF_OCCUR_DESC, LOC_CLASSFCTN_DESC, 
+            X_COORD_CD, Y_COORD_CD, 
+            Latitude, Longitude, Lon_Lat, 
+            PRECINCT, JURISDICTION_CODE, STATISTICAL_MURDER_FLAG,
+            PERP_AGE_GROUP,PERP_RACE,
+            VIC_AGE_GROUP, VIC_RACE)) %>%
+  mutate(OCCUR_DATE = mdy(OCCUR_DATE), 
+         BORO = as.factor(BORO), 
+         PERP_SEX = as.factor(PERP_SEX),
+         VIC_SEX = as.factor(VIC_SEX),
+         )
+
+
+summary(nypd_filtered)
+```
+As you can see, the only column which we have NA's or (null) values in is PERP_SEX. For our analysis, we will exclude any rows which contain NA or (null) values. 
+
+# Analysis 1: Shooting Occurrences by Year and Borough
+Here, we analyze the number of shooting occurrences over time for each Borough.
+
+### Borough Data Preparations and Visualization
+Here we create two derived columns:
+
+1. OCCUR_YEAR, which extracts the year element from the OCCUR_DATE column
+2. NUM_OCCURENCES, which counts the number of shooting per Borough per Year
+
+The reason for a yearly analysis and not a monthly or daily analysis is to make the overall trends clearer and reduce noise in the graph.
+```{r borough_analysis, warning=FALSE}
+# Here we will analyze how many shooting occurrences there were in each Borough for each year
+boro_analysis <- nypd_filtered %>% 
+  mutate(OCCUR_YEAR = year(OCCUR_DATE)) %>%
+  group_by(BORO, OCCUR_YEAR) %>%
+  summarise(NUM_OCCURENCES = n(), .groups="drop") %>%
+  ungroup() 
+
+summary(boro_analysis)
+```
+
+```{r borough_visualization}
+#This graph shows the shooting occurrences in each borough for each year
+boro_analysis %>% 
+  ggplot(aes(x=OCCUR_YEAR, y=NUM_OCCURENCES, color=BORO)) +
+  geom_line(linewidth=1) +
+  geom_point() +
+  labs(x="Year", y="Number of Shooting Occurences", title="Shooting Occurences Over Time in NY Boroughs", color="Borough") + 
+  theme_minimal()
+
+```
+
+This is a visualization which shows the number of shooting occurrences per year for each Borough.
+
+### Future Shooting Occurence Modeling
+In this section we will be using a basic linear model to predict the trend for the next 10 years for the number of shooting occurrences in each Borough.
+
+The solid-lines represent historical data taken from the NYPD dataset. The dotted lines represent predictions made by a linear model which takes in the historical trend for each Borough and extrapolates it out 10 years.
+
+```{r borough_future_modeling}
+unique_boros <- unique(boro_analysis$BORO)
+boro_forecast <- tibble()
+
+for (boro in unique_boros) {
+  
+  boro_data <- boro_analysis %>% filter(BORO == boro) #Obtains data for just a single Borough
+  
+  model <- lm(NUM_OCCURENCES ~ OCCUR_YEAR, data = boro_data) #Fits a linear model for each borough
+  
+  future_years <- tibble(OCCUR_YEAR = seq(max(boro_data$OCCUR_YEAR) + 1, max(boro_data$OCCUR_YEAR) + 10, by=1)) #Creates a sequence, starting at the last year for a borough in the dataset and going out 10 more years
+  
+  forecast_results <- predict(model, future_years)
+  
+  # Creates a tibble with the boro name, the future year, the forecast for that year, and a signifier that it is a forecast 
+  individual_boro_forecast <- tibble(
+    BORO = boro,
+    OCCUR_YEAR = future_years$OCCUR_YEAR,
+    NUM_OCCURENCES = forecast_results,
+    TYPE = "Forecast"
+  )
+  
+  # Appends the predictions for that Boro
+  boro_forecast <- bind_rows(boro_forecast, individual_boro_forecast)
+}
+  
+
+boro_history <- boro_analysis %>%
+  mutate(TYPE = "Historical")
+
+combined_borough_data <- bind_rows(boro_history, boro_forecast)
+```
+
+```{r boro_future_plot}
+# Plotting out both the hisorical and future predicted yearly shooting occurences per Borough
+combined_borough_data %>% 
+  ggplot(aes(x=OCCUR_YEAR, y=NUM_OCCURENCES, color=BORO, group=BORO)) +
+  geom_line(data=filter(combined_borough_data, TYPE == "Historical"), linewidth=1) + 
+  geom_point(data=filter(combined_borough_data, TYPE == "Historical"), size=2) +
+  geom_line(data=filter(combined_borough_data, TYPE == "Forecast"), linetype = "dashed", linewidth=1) + 
+  geom_point(data=filter(combined_borough_data, TYPE == "Forecast"), size=2) + 
+  labs(x="Year", y="Number of Shooting Occurences", title="Shooting Occurences Over Time in NY Boroughs and Future Forecasts", color="Borough") + 
+  theme_minimal()
+
+```
+
+### Shooting Occurrences by Year and Borough Conclusion
+Since the year 2006 shooting incidents have generally declined (as in the Bronx and Brooklyn) or stayed roughly the same (as in Manhattan, Queens and Staten Island). The exception to this is 2020 and the following years, which saw a marked increase in the number of shootings. It seems a reasonable assumption to make that this spike in activity is due to COVID and it's knock-on effects. Perhaps there was reduced police presence due to the danger of the virus, or increased rates of mental problems due to lock downs, but I don't have enough data or analysis to say this definitively. The only exception to that 2020 spike is Staten Island, which has remained relatively stable throughout the whole period. 
+
+Our forecast, while not extremely sophisticated, does indicate that given the historical trend one would expect that shooting occurences will either stay stable or decrease as time goes on, as that has been the overall trend for all Boroughs. An expanded feature set and more advanced modeling techniques would likely give a more insightful answer as to what the future holds. 
+
+Without population data, it is hard to say whether the proportion of shooting occurrences relative to the population has increased or decreased, but it seems like that the policies enacted by New York to stop shooting occurrences have been effective enough to not increase the occurrences (except for the time during COVID). More analysis is needed to determine why places like Staten Island have such low and consistent rates of shooting occurrences, whereas places like the Bronx and Brooklyn are so much higher.
+
+#### Potential Data Biases
+Some potential data biases I have identified are: 
+
+1. Population differences are not shown in the data set, so even though it seems like Brooklyn has the highest number of shooting occurrences, it is unknown what it's shooting rate is in relation to the total population?
+2. The tracking and reporting of occurrences could have gotten better or worse over time.
+3. There may have been ways in which "What counts as an occurrence?" has changed over time, skewing reporting.
+4. There could be discrepancies in reporting between Boroughs. 
+
+#### Mitigating Data Biases
+In the hope of mitigating these biases, one could do the following: 
+
+1. Population data could be found for the Boroughs from another data set in order to get a more precise measure of shooting occurrences per-capita. This measure can then be used to more accurately compare Boroughs.
+2. Research can be done on how the NYPD reports a shooting occurrence to understand the details of an occurrence report. If those details have changed over time, data slicing or manipulation can be used to obtain a more accurate view. Additionally, verification that the reporting is done in the same manner for all Boroughs could be obtained from such research.
+
+#### Potential Personal Biases
+For my own personal bias in this analysis, as I don't live in New York nor a big city, it is hard for me to personally relate to these numbers. 500 shooting incidents a year seems like a lot to me, but in a city as big as New York that might be a very small amount. It's important, then, to not make any statements about the safety of the city due to this data (i.e., New York is dangerous because it has X amounts of shootings per year) without further population data and analysis comparing it to other cities. 
+
+Another reason I would hesitate to make conclusions about the safety of the city is that I am from the suburbs and generally find cities too overwhelming. I don't particularly enjoy being in cities, and I would not like to live in one. This means I likely have a subconscious negative bias towards big cities like New York, which could affect my conclusions about the safety and quality of the city without proper mitigation strategies.  
+
+#### Mitigating Personal Biases
+By recognizing that my own experience of life is likely very different than someone living in New York, acknowledging my innate lack of affinity for big cities, and by explaining how not enough data is available to make conclusions about the safety and quality of New York, I hope to mitigate any personal biases and prevent any hasty conclusions from being made. 
+
+## Potential Future Rates of Shooting Occurences
+As an exercise, we will use a simple linear model to attempt to model the future rates of shooting occurences in each Borough, given the historical data available to us. 
+
+
+# Analysis 2: Shooting Occurrences by Gender Dynamics
+Here, we analyze the different gender dynamics that are involved in shooting occurrences.
+By gender dynamics, what I mean is: "What are the genders of the shooting perpetrator and the shooting victim, where there is a perpetrator and victim?"
+
+### Gender Data Preparation and  Visualization
+In this step, we keep two columns from the set: 
+
+1. "PERP_SEX": the gender of the perpetrator.
+2. "VIC_SEX": the gender of the victim.
+
+All nulls and NA values are removed from these two columns, as we are only concerned with incidents where there is a perpetrator and a victim.
+These two columns are then combined into one column, called "PERP_AND_VIC_TYPE". The structure of this new column is:
+
+- "{PERP_SEX} on {VIC_SEX}"
+
+This data is then counted based on the number of occurrences of each PERP_AND_VIC_TYPE category, giving us the next derived column: "NUM_OCCURRENCES". This results in our final dataset used for this analysis.
+```{r gender_analysis}
+# Here we will analyze the amount of shooting occurrences attributed to a given gender against another gender
+## The categories will be like "male on female" or "female on unknown"
+# To handle nulls, we will throw out any null occurrences in both the perpetrator gender and victim gender
+
+gender_analysis <- nypd_filtered %>%
+  select(c(PERP_SEX, VIC_SEX)) %>%
+  filter(!is.na(PERP_SEX) & !is.na(VIC_SEX), PERP_SEX != "(null)", VIC_SEX != "(null)") %>%
+  mutate(PERP_AND_VIC_TYPE = str_c(PERP_SEX, VIC_SEX, sep=" on ")) %>%
+  group_by(PERP_AND_VIC_TYPE) %>%
+  summarize(NUM_OCCURRENCES = n()) %>%
+  ungroup()
+
+summary(gender_analysis)
+```
+
+```{r gender_visualization}
+gender_analysis %>% 
+  ggplot(aes(x=PERP_AND_VIC_TYPE, y=NUM_OCCURRENCES)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = NUM_OCCURRENCES, vjust = -0.25)) +
+  labs(x = "Perpetator on Victim Gender Dynamic", y = "Number of Shooting Occurences",  title = "Shooting Occurences in New York by Gender Dynamic")
+
+```
+
+This is a visualization which shows the number of New York shooting occurrences for each Gender Dynamic.
+
+
+
+## Gender Dynamic Analysis Conclusion
+From the data we can clearly see that Men commit significantly more shooting occurrences than Women or the "U" category, but it also is clear that Men are disproportionately the victims of shooting occurrences as well. The reasons for these are likely multifaceted and interesting, but there is not enough data here to definitively claim one reason or another. We can say, however, that as long as the data can be trusted, Men commit more shooting occurrences than any other gender and are more victimized by shooting occurrences than any other gender. 
+
+#### Potential Data Biases
+Some potential data biases I have identified are:
+
+1. Population demographic differences (male vs female vs "u" ratios) are not defined, so it's impossible to get an accurate per-capita measure. If there were significantly more of one gender than the others, it would need to be accounted for in the analysis. 
+2. Is access to guns in any way influenced by gender? For example, if 50% of men had a gun and only 10% of women had a gun, it would follow that men would be likely to commit more shooting occurrences than women.
+
+#### Mitigating Data Biases
+In the hopes of mitigating these biases, one could do the following: 
+
+1. Find the population numbers and demographic gender ratios for NY to obtain accurate per-capita data to include in the analysis.
+2. Look up the firearm ownership rate for men and women in New York and consider that data in the analysis as well.
+
+#### Potential Personal Biases
+I can identify two major personal biases which could impact any kind of conclusions drawn from this data. Firstly, there is a common cultural assumption that Men are more violent than Women - but is this true? The data above would seem to suggest such a thing, as the shooting occurrences are much higher with a male initiator than with any other group, but the reasons for this can be multifaceted.
+
+Secondly, as I am a Man, does that mean I have a positive in-group bias? It's possible that I do. But, it's also possible that I have a negative in-group bias, in favor of Women. These unconscious biases can lead to inaccurate conclusions if not recognized and accounted for. 
+
+#### Mitigating Personal Biases
+In order to mitigate these personal biases, further investigations into the assumptions of "why" Men seem to commit more shooting occurrences is warranted. It could be gender ratios, access to firearms, economic opportunity, or intrinsic nature. Unfortunately, I just do not have the data here to make any descriptive statements about the character or natures of Men, Women or otherwise. 
+Next, by recognizing that I am a Man and may have biases for and against any given gender, I can hope to mitigate that by strictly following the data and not letting my personal feelings come into the equation when drawing a conclusion. 
+
+```{r session_info}
+sessionInfo()
+```
